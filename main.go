@@ -11,10 +11,12 @@ import (
 	"github.com/alibaba/sentinel-golang/core/base"
 	"github.com/alibaba/sentinel-golang/core/flow"
 	"github.com/nacos-group/nacos-sdk-go/vo"
+	"math/rand"
 	"sync"
 )
 
 var w sync.WaitGroup
+var m sync.Mutex
 
 // 发布两个配置
 func addConfigToNacos() {
@@ -91,7 +93,7 @@ func addConfigInSentienl(m map[string]any) {
 	})
 }
 
-func Sen(resource string) {
+func SenRegisterRules() {
 	if err := sentinel.InitDefault(); err != nil {
 		// 初始化失败
 		panic(err.Error())
@@ -103,24 +105,6 @@ func Sen(resource string) {
 	if err != nil {
 		panic(err.Error())
 	}
-	currency := 10
-	w.Add(currency)
-	for i := 0; i < currency; i++ {
-		go func() {
-			e, b := sentinel.Entry(resource, sentinel.WithTrafficType(base.Inbound))
-			if b != nil {
-				// 被流控
-				fmt.Printf("blocked %s \n", b.BlockMsg())
-			} else {
-				// 通过
-				fmt.Println("pass...")
-				// 通过后必须调用Exit
-				e.Exit()
-			}
-			w.Done()
-		}()
-	}
-	w.Wait()
 }
 
 func main() {
@@ -129,6 +113,51 @@ func main() {
 	config2 := getConfigFromNacos("server2", "sen_group")
 	addConfigInSentienl(config1)
 	addConfigInSentienl(config2)
-	Sen("server1")
-	Sen("server2")
+	SenRegisterRules()
+
+	// 模拟一百次用户不同的请求，随机访问server1或者server2。预计server1通过3次，server2通过5次。
+	currency := 100
+	server1Num := 0
+	server2Num := 0
+	var resource string
+	w.Add(currency)
+	for i := 0; i < currency; i++ {
+		go func() {
+			c := rand.Intn(2)
+			if c == 0 {
+				resource = "server1"
+				e, b := sentinel.Entry(resource, sentinel.WithTrafficType(base.Inbound))
+				if b != nil {
+					// 被流控
+					fmt.Printf("blocked %s \n", b.BlockMsg())
+				} else {
+					// 通过
+					m.Lock()
+					server1Num += 1
+					m.Unlock()
+					fmt.Println("server1 pass...", server1Num, "次")
+					// 通过后必须调用Exit
+					e.Exit()
+				}
+			} else {
+				resource = "server2"
+				e, b := sentinel.Entry(resource, sentinel.WithTrafficType(base.Inbound))
+
+				if b != nil {
+					// 被流控
+					fmt.Printf("blocked %s \n", b.BlockMsg())
+				} else {
+					// 通过
+					m.Lock()
+					server2Num += 1
+					m.Unlock()
+					fmt.Println("server2 pass...", server2Num, "次")
+					// 通过后必须调用Exit
+					e.Exit()
+				}
+			}
+			w.Done()
+		}()
+	}
+	w.Wait()
 }
